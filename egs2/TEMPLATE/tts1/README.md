@@ -23,6 +23,7 @@ This is a template of TTS recipe for ESPnet2.
     * [Multi language model with language ID embedding training](#multi-language-model-with-language-id-embedding-training)
     * [VITS training](#vits-training)
     * [Joint text2wav training](#joint-text2wav-training)
+    * [Evaluation](#evaluation)
   * [Supported text frontend](#supported-text-frontend)
   * [Supported text cleaner](#supported-text-cleaner)
   * [Supported Models](#supported-models)
@@ -117,11 +118,15 @@ See also:
 ### 8-9. (Optional) Pack results for upload
 
 Packing stage.
-It packs the trained model files and uploads to [Zenodo](https://zenodo.org/).
+It packs the trained model files and uploads to [Zenodo](https://zenodo.org/) (Zenodo upload will be deprecated).
 If you want to run this stage, you need to register your account in zenodo.
 
 See also:
 - [ESPnet Model Zoo](https://github.com/espnet/espnet_model_zoo)
+
+#### Stage 10: Upload model to Hugging Face
+
+Upload the trained model to Hugging Face for sharing. Additonal information at [Docs](https://espnet.github.io/espnet/espnet2_tutorial.html#packing-and-sharing-your-trained-model).
 
 ## How to run
 
@@ -542,6 +547,79 @@ You can find the example configs in:
 - [`egs2/ljspeech/tts1/conf/tuning/train_joint_conformer_fastspeech2_hifigan.yaml`: Joint training of conformer fastspeech2 + hifigan](../../ljspeech/tts1/conf/tuning/train_joint_conformer_fastspeech2_hifigan.yaml).
 - [`egs2/ljspeech/tts1/conf/tuning/finetune_joint_conformer_fastspeech2_hifigan.yaml`: Joint fine-tuning of conformer fastspeech2 + hifigan](../../ljspeech/tts1/conf/tuning/finetune_joint_conformer_fastspeech2_hifigan.yaml).
 
+### Evaluation
+
+We provide three objective evaluation metrics:
+
+- Mel-cepstral distortion (MCD)
+- Log-F0 root mean square error (log-F0 RMSE)
+- Character error rate (CER)
+
+MCD and log-F0 RMSE reflect speaker, prosody, and phonetic content similarities, and CER can reflect the intelligibility.
+For MCD and log-F0 RMSE, we apply dynamic time-warping (DTW) to match the length difference between ground-truth speech and generated speech.
+
+Here we show the example command to calculate objective metrics:
+
+```sh
+cd egs2/<recipe_name>/tts1
+. ./path.sh
+
+# Evaluate MCD
+./pyscripts/utils/evaluate_mcd.py \
+    exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav.scp \
+    dump/raw/eval1/wav.scp
+
+# Evaluate log-F0 RMSE
+./pyscripts/utils/evaluate_f0.py \
+    exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav.scp \
+    dump/raw/eval1/wav.scp
+
+# If you want to calculate more precisely, limit the f0 range
+./pyscripts/utils/evaluate_f0.py \
+    --f0min xxx \
+    --f0max yyy \
+    exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav.scp \
+    dump/raw/eval1/wav.scp
+
+# Evaluate CER
+./scripts/utils/evaluate_asr.sh \
+    --model_tag <asr_model_tag> \
+    --nj 1 \
+    --inference_args "--beam_size 10 --ctc_weight 0.4 --lm_weight 0.0" \
+    --gt_text "dump/raw/eval1/text" \
+    exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav.scp \
+    exp/<model_dir_name>/<decode_dir_name>/asr_results
+
+# Since ASR model does not use punctuation, it is better to remove punctuations if it contains
+./utils/remove_punctuation.pl < dump/raw/eval1/text > dump/raw/eval1/text.no_punc
+./scripts/utils/evaluate_asr.sh \
+    --model_tag <asr_model_tag> \
+    --nj 1 \
+    --inference_args "--beam_size 10 --ctc_weight 0.4 --lm_weight 0.0" \
+    --gt_text "dump/raw/eval1/text.no_punc" \
+    exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav.scp \
+    exp/<model_dir_name>/<decode_dir_name>/asr_results
+
+# Some ASR models assume the existence of silence at the beginning and the end of audio
+# Then, you can perform silence padding with sox to get more reasonable ASR results
+awk < exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav.scp" \
+    '{print $1 " sox " $2 " -t wav - pad 0.25 0.25 |"}' \
+    > exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav_pad.scp
+./scripts/utils/evaluate_asr.sh \
+    --model_tag <asr_model_tag> \
+    --nj 1 \
+    --inference_args "--beam_size 10 --ctc_weight 0.4 --lm_weight 0.0" \
+    --gt_text "dump/raw/eval1/text.no_punc" \
+    exp/<model_dir_name>/<decode_dir_name>/eval1/wav/wav_pad.scp \
+    exp/<model_dir_name>/<decode_dir_name>/asr_results
+
+```
+
+While these objective metrics can estimate the quality of synthesized speech, it is still difficult to fully determine human perceptual quality from these values, especially with high-fidelity generated speech.
+Therefore, we recommend performing the subjective evaluation if you want to check perceptual quality in detail.
+
+You can refer [this page](https://github.com/kan-bayashi/webMUSHRA/blob/master/HOW_TO_SETUP.md) to launch web-based subjective evaluation system with [webMUSHRA](https://github.com/audiolabs/webMUSHRA).
+
 ## Supported text frontend
 
 You can change via `--g2p` option in `tts.sh`.
@@ -597,10 +675,14 @@ You can change via `--g2p` option in `tts.sh`.
     - e.g. `Hei maailma.` -> `[h, ˈei, m, ˈaː, ɪ, l, m, a, .]`
     - This result provided by the wrapper library [bootphon/phonemizer](https://github.com/bootphon/phonemizer)
 - `espeak_ng_hungarian`: [espeak-ng/espeak-ng](https://github.com/espeak-ng/espeak-ng)
-    - e.g. `"Helló Világ.` -> `[h, ˈɛ, l, l, oː, v, ˈi, l, aː, ɡ, .]`
+    - e.g. `Helló Világ.` -> `[h, ˈɛ, l, l, oː, v, ˈi, l, aː, ɡ, .]`
     - This result provided by the wrapper library [bootphon/phonemizer](https://github.com/bootphon/phonemizer)
 - `espeak_ng_dutch`: [espeak-ng/espeak-ng](https://github.com/espeak-ng/espeak-ng)
-    - e.g. `"Hallo Wereld.` -> `[h, ˈɑ, l, oː, ʋ, ˈɪː, r, ə, l, t, .]`
+    - e.g. `Hallo Wereld.` -> `[h, ˈɑ, l, oː, ʋ, ˈɪː, r, ə, l, t, .]`
+    - This result provided by the wrapper library [bootphon/phonemizer](https://github.com/bootphon/phonemizer)
+- `espeak_ng_english_us_vits`: [espeak-ng/espeak-ng](https://github.com/espeak-ng/espeak-ng)
+    - VITS official implementation-like processing (https://github.com/jaywalnut310/vits)
+    - e.g. `Hello World.` -> `[h, ə, l, ˈ, o, ʊ, , <space>, w, ˈ, ɜ, ː, l, d, .]`
     - This result provided by the wrapper library [bootphon/phonemizer](https://github.com/bootphon/phonemizer)
 - `g2pk`: [Kyubyong/g2pK](https://github.com/Kyubyong/g2pK)
     - e.g. `안녕하세요 세계입니다.` -> `[ᄋ, ᅡ, ᆫ, ᄂ, ᅧ, ᆼ, ᄒ, ᅡ, ᄉ, ᅦ, ᄋ, ᅭ,  , ᄉ, ᅦ, ᄀ, ᅨ, ᄋ, ᅵ, ᆷ, ᄂ, ᅵ, ᄃ, ᅡ, .]`
@@ -705,7 +787,7 @@ See [use a pretrained model for inference](https://github.com/espnet/espnet_mode
 ### How to get pretrained models?
 
 Use [ESPnet model zoo](https://github.com/espnet/espnet_model_zoo).
-You can find the all of the pretrained model list from [here](https://github.com/espnet/espnet_model_zoo/blob/master/espnet_model_zoo/table.csv).
+You can find the all of the pretrained model list from [here](https://github.com/espnet/espnet_model_zoo/blob/master/espnet_model_zoo/table.csv) or search for pretrained models at [Hugging Face](https://huggingface.co/models?library=espnet).
 
 If you want to use pretrained models written in `egs2/hogehoge/tts1/README.md`, go to Zenodo URL and copy the URL of download in the below of the page.
 Then, you can use as follows:
